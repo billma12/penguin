@@ -1,18 +1,14 @@
+#!/usr/bin/python
+
 '''
 Description:
-	This script detects a cone in an image of a map and finds the angle
-	between the the cone lines. Also finds the angle of streets
+    This script detects a cone in an image of a map and finds the angle
+    between the the cone lines. Also finds the angle of streets
 General steps:
-	1. Detect Cone using cv2.MatchTemplate()
-	2. Crop the cone
-	3. Filter cropped image (HSV then Canny)
-	4. Perform Hough Transform on Cannified image to detect lines
-	5. Do some math to find angle between lines
-Bugs (as of 1/5/18):
-	1. When there is too much 'junk' in the image, it's hard to detect the
-	   proper lines (problem in city maps)
-	   		- need to manually check proper angles
-	2. Sometimes angle is off by 90 degrees (can be fixed)
+    1. Detect and crop cone
+    2. Filter cropped image (HSV then Canny)
+    3. Perform Hough Transform on Cannified image to detect lines
+    4. Do some math to find angle between lines
 '''
 
 from __future__ import division
@@ -45,7 +41,7 @@ class MapImage:
         h, s, v = cv2.split(hsv)
         canny = cv2.Canny(s, 80, 180, apertureSize=3)
 
-        return canny
+        return s, canny
 
     def filterImgStreet(self):
         bw = cv2.cvtColor(self.crop, cv2.COLOR_BGR2GRAY)
@@ -59,7 +55,7 @@ class Angle(MapImage):
     def __init__(self, img_path):
         MapImage.__init__(self, img_path)
         self.cone = self.cropCone()
-        self.canny_cone = self.filterImgCone()
+        self.s, self.canny_cone = self.filterImgCone()
         self.canny_street = self.filterImgStreet()
         self.drawing = self.cone.copy()
         self.cone_angles = []
@@ -70,7 +66,7 @@ class Angle(MapImage):
 
     def findConeAngles(self):
         lines = cv2.HoughLinesP(self.canny_cone, 1, np.pi /
-                                180, 25, minLineLength=40, maxLineGap=8)
+                                180, 35, minLineLength=42, maxLineGap=10)
 
         for line in lines[0]:
             x1, y1, x2, y2 = line
@@ -85,20 +81,41 @@ class Angle(MapImage):
             length = np.sqrt(
                 (x2 - x1)**2 + (y2 - y1)**2)
             if dist_from_center < 90:
-                if angle > 92 or angle < 88:
-                    if abs(angle) > 2 and abs(angle) < 88:
-                        self.cone_angles.append(angle)
-                        self.cone_points.append(line)
-                        cv2.line(self.drawing, (x1, y1),
-                                 (x2, y2), (0, 255, 0), 2)
+                # if angle > 92 or angle < 88:
+                #    if abs(angle) > 2 and abs(angle) < 88:
+                self.cone_angles.append([angle, length, line])
+                self.cone_points.append(line)
+                cv2.line(self.drawing, (x1, y1),
+                         (x2, y2), (0, 255, 0), 2)
+
+        self.cone_angles = sorted(self.cone_angles, key=lambda x: x[1])[::-1]
+
+        angles = []
+        for i in range(0, len(self.cone_angles)):
+            angles.append(self.cone_angles[i][0])
 
         if len(self.cone_angles) > 1:
-            print 'cone angles: {}, {}'.format(self.cone_angles[0],self.cone_angles[1])
-        print 'other possible cone angles: {}'.format(self.cone_angles)
+            an = self.cone_angles[0][0]
+            for i, ang in enumerate(self.cone_angles):
+                if abs(ang[0] - an) > 2:
+                    break
+
+            x1, y1, x2, y2 = self.cone_angles[i][2]
+            x3, y3, x4, y4 = self.cone_angles[i - 1][2]
+
+            cv2.line(self.drawing, (x1, y1),
+                     (x2, y2), (0, 255, 255), 2)
+            cv2.line(self.drawing, (x3, y3),
+                     (x4, y4), (0, 255, 255), 2)
+
+            self.cone_angles = [self.cone_angles[i], self.cone_angles[i - 1]]
+            print 'cone angles: {} {}'.format(self.cone_angles[0][0], self.cone_angles[1][0])
+
+        print 'other possible cone angles: {}'.format(angles)
 
     def findStreetAngle(self):
         lines = cv2.HoughLinesP(self.canny_street, 1, np.pi /
-                                180, 20, minLineLength=90, maxLineGap=8)
+                                180, 25, minLineLength=75, maxLineGap=8)
 
         for line in lines[0]:
             x1, y1, x2, y2 = line
@@ -106,89 +123,49 @@ class Angle(MapImage):
                 angle = 90
             else:
                 angle = np.arctan((y1 - y2) / (x2 - x1)) * 180 / np.pi
-            
-            print angle
-            if abs(angle) > 70 and abs(angle) < 120:
-                cv2.line(self.drawing, (x1, y1), (x2, y2), (255, 0, 0), 2)       
-        
-        '''    
-        for line in lines[0]:
-            x1, y1, x2, y2 = line
-            if x2 == x1:
-                angle = 0
-            else:
-                angle = np.arctan((y1 - y2) / (x2 - x1)) * 180 / np.pi
 
-            if angle < 0:
-                angle = angle + 180
+            # assume street b/t 50 and 120 degrees
+            if abs(angle) > 50 and abs(angle) < 120:
+                dist_from_center = np.sqrt(
+                    (x1 - self.crop_center[0])**2 + (y1 - self.crop_center[1])**2)
+                length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+                if angle < 0:
+                    self.street_angles.append([angle + 180, dist_from_center, length, line])
+                else:
+                    self.street_angles.append([angle, dist_from_center, length, line])
 
-            # assume streets are between 70 and 120 degrees
-            if angle > 70 and angle < 120:
-                # angles_temp.append((angle, [x1, y1, x2, y2]))
-                cv2.line(self.drawing, (x1, y1), (x2, y2), (255, 0, 0), 2)
-        '''
-        # cv2.imshow('self.drawing', self.drawing)
-        # cv2.waitKey(0)
-        '''
-        angles_temp = []
-        for line in lines[0]:
-            x1, y1, x2, y2 = line
-            if x2 == x1:
-                angle = 0
-            else:
-                angle = np.arctan((y1 - y2) / (x2 - x1)) * 180 / np.pi
+        self.street_angles = sorted(self.street_angles, key=lambda x: x[2])[::-1]
 
-            if angle < 0:
-                angle = angle + 180
+        x1, y1, x2, y2 = self.street_angles[0][3]
+        cv2.line(self.drawing, (x1, y1), (x2, y2), (255, 0, 255), 2)
+        self.street_angle = self.street_angles[0][0]
+        print 'street angle: {}'.format(self.street_angle)
 
-            # assume streets are between 70 and 120 degrees
-            if angle < 120 and angle > 70:
-                angles_temp.append((angle, [x1, y1, x2, y2]))
-
-        # only display streets in the middle
-        angles_temp = sorted(angles_temp, key=lambda x: x[1][0])
-
-        half = len(angles_temp) // 2
-        _max = 0
-
-        if len(angles_temp) > 8:
-            start = half
-            end = half + 4
-        else:
-            start = 0
-            end = len(angles_temp)
-
-        for i in range(start, end):
-            x1, y1, x2, y2 = angles_temp[i][1]
-            dist = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-            self.street_angles.append(angles_temp[i][0])
+        i = 1
+        angles = []
+        while i < len(self.street_angles):
+            if i == 4:
+                break
+            x1, y1, x2, y2 = self.street_angles[i][3]
+            angles.append(self.street_angles[i][0])
             cv2.line(self.drawing, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            i = i + 1
 
-            if dist > _max:
-                self.street_angle = angles_temp[i][0]
-                _max = dist
-                x3, y3, x4, y4 = x1, y1, x2, y2
-
-        # draw the street angle (based on longest line)
-        cv2.line(self.drawing, (x3, y3), (x4, y4), (255, 255, 0), 2)
-
-        print 'street angle: ', self.street_angle
-        print 'other possible street angles: {}'.format(self.street_angles)
-        '''
+        print 'other possible street angles: {}'.format(angles)
 
     def drawMidLine(self):
         if len(self.cone_angles) > 1:
             self.mid_angle = 90 + \
-                ((self.cone_angles[0] + self.cone_angles[1]) / 2)
+                ((self.cone_angles[0][0] + self.cone_angles[1][0]) / 2)
 
             # sometimes angle is off by 90 degrees
-            if self.cone_angles[0] * self.cone_angles[1] > 0:
+            if self.cone_angles[0][0] * self.cone_angles[1][0] > 0:
                 self.mid_angle = self.mid_angle + 90
                 if self.mid_angle > 180:
                     self.mid_angle = self.mid_angle - 180
 
-            x1, y1, x2, y2 = self.cone_points[0]
-            x3, y3, x4, y4 = self.cone_points[1]
+            x1, y1, x2, y2 = self.cone_angles[0][2]
+            x3, y3, x4, y4 = self.cone_angles[1][2]
 
             # find intersection
             mid_x0 = int(((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / (
@@ -212,8 +189,14 @@ class Angle(MapImage):
         return self.drawing
 
     def displayResults(self):
-        print 'angle off: {}'.format(self.street_angle-self.mid_angle)
-        cv2.imshow('full', self.drawing)
+        print 'angle off: {}'.format(self.street_angle - self.mid_angle)
+        full = cv2.hconcat((cv2.cvtColor(self.canny_cone, cv2.COLOR_GRAY2BGR), self.drawing))
+        cv2.imshow('full', full)
+        cv2.waitKey(0)
+
+    def demo(self):
+        full = cv2.hconcat((self.cone, cv2.cvtColor(self.s, cv2.COLOR_GRAY2BGR), cv2.cvtColor(self.canny_cone, cv2.COLOR_GRAY2BGR), self.drawing))
+        cv2.imshow('full', full)
         cv2.waitKey(0)
 
     def main(self):
@@ -221,6 +204,7 @@ class Angle(MapImage):
         self.findConeAngles()
         self.drawMidLine()
         self.displayResults()
+        # self.demo()
 
 
 def main():
@@ -235,6 +219,7 @@ def main():
             if img[-4:] == '.png':
                 print '----{}----'.format(img)
                 Angle(p + img).main()
+
 
 if __name__ == '__main__':
     main()
