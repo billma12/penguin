@@ -1,5 +1,3 @@
-#!/usr/bin/python
-
 '''
 Description:
     This script detects a cone in an image of a map and finds the angle
